@@ -163,7 +163,7 @@ class Hiera
 
                 # Create an AWS connecton object for this region.
                 debug("Creating new client")
-                @cf[region] = Aws::CloudFormation::Client.new(region: region)
+                @cf[region] = Aws::CloudFormation::Client.new(region: region, retry_limit: 10)
             end
 
 
