@@ -21,12 +21,12 @@ class Hiera
 
             def initialize
                 begin
-                    require 'aws'
+                    require 'aws-sdk'
                     require 'timedcache'
                     require 'json'
                 rescue LoadError
                     require 'rubygems'
-                    require 'aws'
+                    require 'aws-sdk'
                     require 'timedcache'
                     require 'json'
                 end
@@ -84,14 +84,10 @@ class Hiera
                     @parse_metadata = false
                 end
                 
-                debug("Using AWS access key #{Config[:cloudformation][:access_key_id]}")
-                @@aws_config['access_key_id'] = Config[:cloudformation][:access_key_id]
-                @@aws_config['secret_access_key'] = Config[:cloudformation][:secret_access_key]
                 debug("Using AWS region #{Config[:cloudformation][:region]}")
                 @@aws_config['region'] = Config[:cloudformation][:region]
                 debug("Hiera cloudformation backend loaded")
             end
-
 
             def lookup(key, scope, order_override, resolution_type)
                 answer = nil
@@ -166,29 +162,31 @@ class Hiera
                 end
 
                 # Create an AWS connecton object for this region.
-                @cf[region] = AWS::CloudFormation.new(
-                  :access_key_id => @@aws_config['access_key_id'],
-                    :secret_access_key => @@aws_config['secret_access_key'],
-                    :region => region
-                )
+                debug("Creating new client")
+                @cf[region] = Aws::CloudFormation::Client.new(region: region)
             end
 
 
             def stack_output_query(stack_name, key, region)
                 outputs = @@output_cache.get(region+stack_name)
 
+                stack_resource = Aws::CloudFormation::Resource.new(
+                    client: @cf[region],
+                )
+                stack = stack_resource.stack(stack_name)
+
                 if outputs.nil? then
                     debug("#{stack_name} outputs not cached, fetching...")
                     begin
-                         outputs = @cf[region].stacks[stack_name].outputs
-                    rescue AWS::CloudFormation::Errors::ValidationError
+                         outputs = stack.outputs
+                    rescue Aws::CloudFormation::Errors::ValidationError
                         debug("Stack #{stack_name} outputs can't be retrieved")
                         outputs = []  # this is just a non-nil value to serve as marker in cache
                     end
                     @@output_cache.put(region+stack_name, outputs, TIMEOUT)
                 end
 
-                output = outputs.select { |item| item.key == key }
+                output = outputs.select { |item| item.output_key == key }
 
                 return output.empty? ? nil : output.shift.value
             end
@@ -200,8 +198,12 @@ class Hiera
                 if metadata.nil? then
                     debug("#{stack_name} #{resource_id} metadata not cached, fetching")
                     begin
-                        metadata = @cf[region].stacks[stack_name].resources[resource_id].metadata
-                    rescue AWS::CloudFormation::Errors::ValidationError
+                        stack_resource = Aws::CloudFormation::Resource.new(
+                            client: @cf[region],
+                        )
+                        stack = stack_resource.stack(stack_name)
+                        metadata = stack.resource(resource_id).metadata
+                    rescue Aws::CloudFormation::Errors::ValidationError
                         # Stack or resource doesn't exist
                         debug("Stack #{stack_name} resource #{resource_id} can't be retrieved")
                         metadata = "{}" # This is just a non-nil value to serve as marker in cache
@@ -262,7 +264,7 @@ class Hiera
             def is_aws_region_name?(name)
                    # Make an array of valid AWS regions.
                  aws_region_names = []
-                 AWS.regions.each do |aws_region|
+                 Aws.partition('aws').regions.each do |aws_region|
                     aws_region_names.push(aws_region.name)
                 end
 
